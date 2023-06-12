@@ -28,8 +28,8 @@
       {{#each students}}
       <li>
         <span id="name-{{this.id}}">
-          <img class="std-img" src="/img/{{this.image}}" /> {{this.name}} from
-          {{this.house}}</span
+          <img class="std-img" src="/public/images/{{this.image}}" />
+          {{this.name}} from {{this.house}}</span
         >
         <form style="display: inline" action="/students/delete" method="post">
           <input type="hidden" name="id" value="{{this.id}}" />

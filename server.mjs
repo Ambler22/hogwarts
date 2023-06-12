@@ -1,15 +1,17 @@
-import http from "http";
-import url from "url";
-import fs from "fs/promises";
-import path from "path";
+import http from "node:http";
+import url from "node:url";
+import fs from "node:fs/promises";
+import path from "node:path";
 
 import sqlite3 from "sqlite3";
 import { open } from "sqlite";
-
 import handlebars from "handlebars";
+
+import { parseFormData, redirect, json } from "./utils.mjs";
 
 const HOSTNAME = process.env.HOSTNAME || "127.0.0.1";
 const PORT = process.env.PORT || 8000;
+const PUBLIC_PATH = path.join(process.cwd(), "public");
 
 var db = await open({
   filename: "hogwarts.db",
@@ -67,11 +69,6 @@ var routes = [
     methods: ["GET"],
     handler: studentsAPISearch,
   },
-  {
-    path: "/img/:image",
-    methods: ["GET"],
-    handler: studentsImage,
-  },
 ];
 
 for (let route of routes) {
@@ -80,8 +77,54 @@ for (let route of routes) {
   );
 }
 
-var server = http.createServer(function handler(request, response) {
+var MIME_TYPES = {
+  default: "application/octet-stream",
+  html: "text/html; charset=utf-8",
+  js: "text/javascript",
+  mjs: "text/javascript",
+  css: "text/css",
+  png: "image/png",
+  jpg: "image/jpg",
+  jpeg: "image/jpeg",
+  gif: "image/gif",
+  ico: "image/x-icon",
+  svg: "image/svg+xml",
+};
+
+var server = http.createServer(async function handleRequest(request, response) {
   var parsedURL = url.parse(request.url);
+
+  var originalEnd = response.end;
+
+  response.end = function monkeyPatchedEnd(chunk, encoding, cb) {
+    console.log(request.method, request.url, response.statusCode);
+    return originalEnd.call(this, chunk, encoding, cb);
+  };
+
+  if (request.url.endsWith("/")) {
+    redirect(request, response, request.url.slice(0, -1), 301);
+    return;
+  }
+
+  if (request.url.startsWith("/public/")) {
+    let filePath = path.join(PUBLIC_PATH, request.url.replace("/public/", ""));
+    let fileExists = await fs.access(filePath).then(
+      () => true,
+      () => false
+    );
+    let fileFound = filePath.startsWith(PUBLIC_PATH) && fileExists;
+    if (!fileFound) {
+      response
+        .writeHead(404, { "Content-Type": "text/html" })
+        .end("<h1>Not found!</h1>\n");
+    } else {
+      let fileExt = path.extname(filePath).slice(1).toLowerCase();
+      let mimeType = MIME_TYPES[fileExt] ?? MIME_TYPES.default;
+      let buffer = await fs.readFile(filePath);
+      response.writeHead(200, { "Content-Type": mimeType }).end(buffer);
+    }
+    return;
+  }
 
   for (let route of routes) {
     let match = route.pattern.exec(parsedURL.pathname);
@@ -107,11 +150,7 @@ var server = http.createServer(function handler(request, response) {
  * @param {http.ServerResponse} response
  */
 function index(request, response) {
-  response
-    .writeHead(302, {
-      Location: `http://${request.headers.host}/students`,
-    })
-    .end();
+  redirect(request, response, "/students");
 }
 
 /**
@@ -145,11 +184,7 @@ async function studentList(request, response) {
       }
     }
 
-    response
-      .writeHead(302, {
-        Location: `http://${request.headers.host}/students`,
-      })
-      .end();
+    redirect(request, response, "/students");
   } else {
     let searchParams = new URLSearchParams(parsedURL.query);
     let order = searchParams.get("order");
@@ -183,11 +218,7 @@ async function studentDelete(request, response) {
     await db.run("DELETE FROM students WHERE id = ?", studentId);
   }
 
-  response
-    .writeHead(302, {
-      Location: `http://${request.headers.host}/students`,
-    })
-    .end();
+  redirect(request, response, "/students");
 }
 
 /**
@@ -240,11 +271,7 @@ async function studentChange(request, response, params) {
           return;
         }
       }
-      response
-        .writeHead(302, {
-          Location: `http://${request.headers.host}/students`,
-        })
-        .end();
+      redirect(request, response, "/students");
     } else {
       let html = await renderTemplate("student-edit.html", {
         ...context,
@@ -271,9 +298,7 @@ async function studentsAPISearch(request, response) {
     `%${search}%`
   );
 
-  response
-    .writeHead(200, { "Content-Type": "applicatoin/json" })
-    .end(JSON.stringify(students));
+  json(response, students);
 }
 
 /**
@@ -312,21 +337,6 @@ async function studentsDownload(request, response) {
 }
 
 /**
- * @param {http.IncomingMessage} request
- * @param {http.ServerResponse} response
- */
-async function studentsImage(request, response, params) {
-  let image = params.image;
-
-  try {
-    let img = await fs.readFile(path.join("images", image));
-    response.end(img);
-  } catch {
-    response.writeHead(404).end();
-  }
-}
-
-/**
  * @param {string} name
  * @param {Record<string, unknown>} context
  * @returns {Promise<string>}
@@ -336,34 +346,6 @@ async function renderTemplate(name, context) {
   let template = handlebars.compile(templateStr);
   let htmlStr = template(context);
   return htmlStr;
-}
-
-/**
- * @param {http.IncomingMessage} request
- * @returns {Promise<FormData>}
- */
-async function parseFormData(request) {
-  return new Promise(function (resolve, reject) {
-    var chunks = [];
-
-    request.on("data", function (chunk) {
-      chunks.push(chunk);
-    });
-
-    request.on("end", function () {
-      var body = Buffer.concat(chunks).toString();
-      var params = new URLSearchParams(body);
-      var formData = new FormData();
-
-      for (let [key, value] of params) {
-        formData.append(key, value);
-      }
-
-      resolve(formData);
-    });
-
-    request.on("error", reject);
-  });
 }
 
 server.listen(PORT, HOSTNAME, function () {
